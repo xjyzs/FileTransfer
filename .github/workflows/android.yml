@@ -13,6 +13,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Check Python version
+        run: python --version
+
       - name: Grant Gradle permission
         run: chmod +x ./gradlew
 
