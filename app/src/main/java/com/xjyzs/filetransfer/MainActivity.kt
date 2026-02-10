@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -78,6 +79,8 @@ import com.google.zxing.common.BitMatrix
 import com.xjyzs.filetransfer.ui.theme.FileTransferTheme
 import java.net.NetworkInterface
 import kotlin.concurrent.thread
+import androidx.compose.ui.res.stringResource
+import androidx.core.content.ContextCompat.getString
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,7 +100,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainUI() {
     val context = LocalContext.current
-    val msgs = remember { mutableStateListOf("Logs") }
+    val logsStr = stringResource(R.string.logs)
+    val msgs = remember { mutableStateListOf(logsStr) }
     val ipLst = remember { mutableStateListOf<String>() }
     var ip by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
@@ -193,8 +197,27 @@ fun MainUI() {
                             }
                             val py = Python.getInstance()
                             val server = py.getModule("server")
+                            val builtins = py.builtins
+                            val dict = builtins.callAttr("dict")
+                            dict.callAttr(
+                                "__setitem__", "uploadSuccessful", getString(
+                                    context, R.string.uploadSuccessful
+                                )
+                            )
+                            dict.callAttr(
+                                "__setitem__", "uploadFailed", getString(
+                                    context, R.string.uploadFailed
+                                )
+                            )
+                            dict.callAttr(
+                                "__setitem__", "serverUrl", getString(
+                                    context, R.string.serverUrl
+                                )
+                            )
                             try {
-                                server.callAttr("main", ip, 1145)
+                                server.callAttr(
+                                    "main", ip, 1145, "http://IP地址", dict
+                                )
                             } catch (e: Throwable) {
                                 errorMsg = e.stackTraceToString()
                                 isError = true
@@ -241,8 +264,16 @@ fun MainUI() {
         AlertDialog(
             { isError = false },
             { TextButton({ isError = false }) { Text("确定") } },
-            title = { Text("错误") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState())) { Text(errorMsg) } })
+            title = { Text(stringResource(R.string.error)) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    SelectionContainer {
+                        Text(
+                            errorMsg
+                        )
+                    }
+                }
+            })
     }
     if (qrExpanded) {
         Dialog({ qrExpanded = false }) {
@@ -257,8 +288,7 @@ fun MainUI() {
                 val bmp = createBitmap(512, 512, Bitmap.Config.RGB_565)
                 for (x in 0 until 512) {
                     for (y in 0 until 512) {
-                        bmp[x, y] =
-                            if (bitMatrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                        bmp[x, y] = if (bitMatrix[x, y]) Color.BLACK else Color.WHITE
                     }
                 }
                 Column(

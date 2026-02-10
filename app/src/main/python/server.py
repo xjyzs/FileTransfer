@@ -2,6 +2,8 @@ import flask
 import os
 import threading
 import requests
+from datetime import datetime
+from waitress import serve
 
 loc = "/sdcard/"
 
@@ -270,18 +272,29 @@ def file(pth=''):
         except Exception as e:
             return str(e)
 
+@app.after_request
+def log_request(response):
+    now = datetime.now().strftime('%d/%b/%Y %H:%M:%S')
+    if response.status_code != 200:
+        log_info = f'{flask.request.remote_addr} - - [{now}] "\033[35m{flask.request.method} {flask.request.path} {flask.request.scheme.upper()}\033[0m" {response.status_code} -'
+    else:
+        log_info = f'{flask.request.remote_addr} - - [{now}] "{flask.request.method} {flask.request.path} {flask.request.scheme.upper()}" {response.status_code} -'
+    print(log_info)
 
-def upload(ip, port):
+    return response
+
+def upload(ip, port, url,dict):
     ipNew = ip
     if ':' in ip:
         ipNew = f'[{ip}]'
     try:
-        requests.post("http://地址", data={'loc': f"http://{ipNew}:{port}"})
-        print("地址上传成功!")
+        requests.post(url, data={'loc': f"http://{ipNew}:{port}"})
+        print(dict['uploadSuccessful'])
     except Exception as e:
-        print(f"地址上传失败: {str(e)}")
+        print(f"{dict['uploadFailed']}: {str(e)}")
 
 
-def main(ip, port):
-    threading.Thread(target=upload, args=(ip, port)).start()
-    app.run(ip, port)
+def main(ip, port, url,dict):
+    threading.Thread(target=upload, args=(ip, port, url, dict)).start()
+    print(f"{dict['serverUrl']}: \033[33mhttp://{ip}:{port}/\033[0m")
+    serve(app,host=ip, port=port,threads=8)

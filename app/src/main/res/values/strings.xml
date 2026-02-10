@@ -1,3 +1,8 @@
 <resources>
-    <string name="app_name">FileTransfer</string>
+    <string name="app_name" translatable="false">FileTransfer</string>
+    <string name="logs">Logs</string>
+    <string name="error">error</string>
+    <string name="serverUrl">server URL</string>
+    <string name="uploadSuccessful">Successfully uploaded!</string>
+    <string name="uploadFailed">Failed to upload URL!</string>
 </resources>

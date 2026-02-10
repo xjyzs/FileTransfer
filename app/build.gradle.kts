@@ -129,6 +129,7 @@ chaquopy {
         pip {
             install("flask")
             install("requests")
+            install("waitress")
         }
     }
 }
