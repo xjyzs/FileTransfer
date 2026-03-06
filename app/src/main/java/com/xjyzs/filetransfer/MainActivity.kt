@@ -8,6 +8,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.media.AudioManager
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -92,6 +94,32 @@ class MainActivity : ComponentActivity() {
                     MainUI()
                 }
             }
+        }
+
+        lateinit var mediaPlayer: MediaPlayer
+        try {
+            mediaPlayer = MediaPlayer.create(this, R.raw.kpalv) // keep alive
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+                when (focusChange) {
+                    AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                        mediaPlayer.start()
+                    }
+                }
+            }
+            audioManager.requestAudioFocus(
+                focusChangeListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+            mediaPlayer.apply {
+                isLooping = true
+                setVolume(0.01f, 0.01f)
+                start()
+            }
+
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }
