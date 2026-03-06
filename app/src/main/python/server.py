@@ -291,7 +291,10 @@ def upload(ip, port, url,dict):
         requests.post(url, data={'loc': f"http://{ipNew}:{port}"})
         print(dict['uploadSuccessful'])
     except Exception as e:
-        print(f"{dict['uploadFailed']}: {str(e)}")
+        if "xn--ip-im8ckc" in str(e):
+            print(f"未配置远程服务器地址，将禁用自动上传地址功能！若要配置，请 Fork 本项目，按照 README 中的提示操作。")
+        else:
+            print(f"{dict['uploadFailed']}: {str(e)}")
 
 
 def main(ip, port, url,dict):
