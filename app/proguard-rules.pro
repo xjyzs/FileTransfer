@@ -19,3 +19,15 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Ktor
+-keep class io.ktor.server.cio.** { *; }
+-keep class io.ktor.server.engine.** { *; }
+-keep class io.ktor.server.routing.** { *; }
+
+-keepclassmembers class kotlinx.** {
+    volatile <fields>;
+}
+
+-dontwarn org.slf4j.**
+-dontwarn io.ktor.**

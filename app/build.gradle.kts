@@ -2,13 +2,14 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("com.chaquo.python") version "17.0.0"
+    alias(libs.plugins.kotlin.serialization)
+    id("kotlin-parcelize")
 }
 
 android {
     namespace = "com.xjyzs.filetransfer"
 
-    compileSdk = 36
+    compileSdk = 37
 
     signingConfigs {
         val hasSigningInfo = System.getenv("KEY_STORE_PASSWORD") != null &&
@@ -29,9 +30,9 @@ android {
     defaultConfig {
         applicationId = "com.xjyzs.filetransfer"
         minSdk = 26
-        targetSdk = 36
-        versionCode = 3
-        versionName = "1.2"
+        targetSdk = 37
+        versionCode = 4
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -100,8 +101,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
     }
     buildFeatures {
         compose = true
@@ -123,15 +124,9 @@ tasks.configureEach {
     }
 }
 
-chaquopy {
-    defaultConfig {
-        version = "3.13"
-        pip {
-            install("flask")
-            install("requests")
-            install("waitress")
-        }
-    }
+configurations.all {
+    exclude(group = "androidx.navigationevent", module = "navigationevent-compose")
+    exclude(group = "androidx.navigation", module = "navigationevent-compose")
 }
 
 dependencies {
@@ -144,14 +139,20 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui.text)
+    implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.ui.graphics)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
     implementation(libs.androidx.material.icons.extended)
-    implementation("com.google.zxing:core:3.5.4")
+    implementation(libs.core) // 二维码
+
+    implementation(libs.miuix.navigation)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.partial.content)
+    implementation(libs.androidx.navigationevent)
+    implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 }
