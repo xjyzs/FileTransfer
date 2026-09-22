@@ -33,6 +33,7 @@ import io.ktor.server.plugins.origin
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.request.uri
 import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.RoutingCall
@@ -49,7 +50,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.InetAddress
@@ -63,9 +66,18 @@ import java.net.URLEncoder
 private sealed interface Resolved {
     data class Dir(val jsonEntries: List<String>) : Resolved
 
-    data class File(
-        val name: String, val size: Long?, val mimeType: String?,
-        val asAttachment: Boolean = false, val open: () -> InputStream
+    data class LocalFile(
+        val file: File,
+        val mimeType: String?,
+        val asAttachment: Boolean = false
+    ) : Resolved
+
+    data class StreamFile(
+        val name: String,
+        val size: Long?,
+        val mimeType: String?,
+        val asAttachment: Boolean = false,
+        val open: (start: Long) -> InputStream
     ) : Resolved
 }
 
@@ -79,6 +91,46 @@ private fun entryJson(name: String, size: Long, link: String? = null): String {
 // 选中内容时，隐藏上传表单
 private val HIDE_UPLOAD_HTML =
     """<script>document.getElementById('uploadForm').style.display='none';</script>"""
+
+private val STREAM_BUFFER_SIZE = 64 * 1024
+
+private fun openSeekableStream(
+    appContext: Context, uri: Uri, start: Long
+): InputStream {
+    try {
+        val pfd = appContext.contentResolver.openFileDescriptor(uri, "r")
+        if (pfd != null) {
+            val fis = FileInputStream(pfd.fileDescriptor)
+            if (start > 0) {
+                fis.channel.position(start)
+            }
+            return object : InputStream() {
+                override fun read() = fis.read()
+                override fun read(b: ByteArray, off: Int, len: Int) = fis.read(b, off, len)
+                override fun close() {
+                    pfd.use { pfd ->
+                        fis.close()
+                    }
+                }
+            }
+        }
+    } catch (_: Exception) {
+    }
+
+    val input = appContext.contentResolver.openInputStream(uri)
+        ?: throw IOException("无法打开 $uri")
+    var skip = start
+    val discard = ByteArray(STREAM_BUFFER_SIZE)
+    while (skip > 0) {
+        val n = input.skip(skip)
+        if (n > 0) { skip -= n; continue }
+        val want = minOf(discard.size.toLong(), skip).toInt()
+        val read = input.read(discard, 0, want)
+        if (read == -1) break
+        skip -= read
+    }
+    return input
+}
 
 class ServerService : Service() {
     private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? =
@@ -144,18 +196,17 @@ class ServerService : Service() {
     private fun resolveSdcard(loc: String, segments: List<String>): Resolved? {
         val f = File(loc, segments.joinToString("/"))
         if (f.isFile) {
-            return Resolved.File(
-                f.name, f.length(), URLConnection.guessContentTypeFromName(f.name)
-            ) {
-                f.inputStream()
-            }
+            return Resolved.LocalFile(
+                file = f,
+                mimeType = URLConnection.guessContentTypeFromName(f.name)
+            )
         }
         if (f.isDirectory) {
             return Resolved.Dir(
                 f.listFiles()
-                ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                ?.map { entryJson(it.name, if (it.isDirectory) -1 else it.length()) }
-                ?: emptyList())
+                    ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+                    ?.map { entryJson(it.name, if (it.isDirectory) -1 else it.length()) }
+                    ?: emptyList())
         }
         return null
     }
@@ -178,9 +229,8 @@ class ServerService : Service() {
 
         if (!item.isDirectory) {
             if (segments.size > 1) return null
-            return Resolved.File(item.name, item.size, item.mimeType, asAttachment = true) {
-                appContext.contentResolver.openInputStream(item.uri)
-                    ?: throw IOException("无法打开 ${item.name}")
+            return Resolved.StreamFile(item.name, item.size, item.mimeType, asAttachment = true) { offset ->
+                openSeekableStream(appContext, item.uri, offset)
             }
         }
 
@@ -199,9 +249,13 @@ class ServerService : Service() {
             } else {
                 if (seg != rest.last()) return null
                 val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.docId)
-                return Resolved.File(child.name, child.size, child.mimeType, asAttachment = true) {
-                    appContext.contentResolver.openInputStream(docUri)
-                        ?: throw IOException("无法打开 ${child.name}")
+                return Resolved.StreamFile(
+                    child.name,
+                    child.size,
+                    child.mimeType,
+                    asAttachment = true
+                ) { offset ->
+                    openSeekableStream(appContext, docUri, offset)
                 }
             }
         }
@@ -238,7 +292,7 @@ class ServerService : Service() {
                 ContentType.Text.Html
             )
 
-            is Resolved.File -> {
+            is Resolved.StreamFile, is Resolved.LocalFile -> {
                 SharedState.requestLogs.add(
                     Request(
                         call.request.origin.remoteAddress,
@@ -284,8 +338,12 @@ class ServerService : Service() {
                 "[" + ref.jsonEntries.joinToString(",") + "]", ContentType.Application.Json
             )
 
-            is Resolved.File -> call.respondText(
+            is Resolved.StreamFile -> call.respondText(
                 entryJson(ref.name, ref.size ?: 0), ContentType.Application.Json
+            )
+
+            is Resolved.LocalFile -> call.respondText(
+                entryJson(ref.file.name, ref.file.length()), ContentType.Application.Json
             )
         }
     }
@@ -296,55 +354,70 @@ class ServerService : Service() {
         return "filename=\"$quoted\"; filename*=UTF-8''$encoded"
     }
 
-    private suspend fun sendFile(call: RoutingCall, ref: Resolved.File) {
-        val contentType = ref.mimeType?.let { runCatching { ContentType.parse(it) }.getOrNull() }
-            ?: ContentType.Application.OctetStream
-        val size = ref.size
-
-        if (ref.asAttachment) {
-            call.response.headers.append(
-                HttpHeaders.ContentDisposition, contentDispositionHeader(ref.name)
-            )
-        }
-        if (size != null) {
-            call.response.headers.append(HttpHeaders.AcceptRanges, "bytes")
-            val range = parseRange(call.request.headers[HttpHeaders.Range], size)
-            if (range != null) {
-                val length = range.last - range.first + 1
-                call.response.headers.append(
-                    HttpHeaders.ContentRange, "bytes ${range.first}-${range.last}/$size"
-                )
-                call.respondBytesWriter(contentType, HttpStatusCode.PartialContent, length) {
-                    streamFrom(ref.open, range.first, length)
+    private suspend fun sendFile(call: RoutingCall, ref: Resolved) {
+        when (ref) {
+            is Resolved.LocalFile -> {
+                if (ref.asAttachment) {
+                    call.response.headers.append(
+                        HttpHeaders.ContentDisposition, contentDispositionHeader(ref.file.name)
+                    )
                 }
-                return
+                call.respondFile(ref.file)
             }
-        }
-        call.respondBytesWriter(contentType, HttpStatusCode.OK, size) {
-            streamFrom(ref.open, 0, size)
+
+            is Resolved.StreamFile -> {
+                val contentType =
+                    ref.mimeType?.let { runCatching { ContentType.parse(it) }.getOrNull() }
+                        ?: ContentType.Application.OctetStream
+                val size = ref.size
+
+                if (ref.asAttachment) {
+                    call.response.headers.append(
+                        HttpHeaders.ContentDisposition, contentDispositionHeader(ref.name)
+                    )
+                }
+                if (size != null) {
+                    call.response.headers.append(HttpHeaders.AcceptRanges, "bytes")
+                    val range = parseRange(call.request.headers[HttpHeaders.Range], size)
+                    if (range != null) {
+                        val length = range.last - range.first + 1
+                        call.response.headers.append(
+                            HttpHeaders.ContentRange, "bytes ${range.first}-${range.last}/$size"
+                        )
+                        call.respondBytesWriter(
+                            contentType,
+                            HttpStatusCode.PartialContent,
+                            length
+                        ) {
+                            streamFrom(ref.open, range.first, length)
+                        }
+                        return
+                    }
+                }
+                call.respondBytesWriter(contentType, HttpStatusCode.OK, size) {
+                    streamFrom(ref.open, 0, size)
+                }
+            }
+
+            else -> Unit
         }
     }
 
     private suspend fun ByteWriteChannel.streamFrom(
-        open: () -> InputStream, start: Long, length: Long?
+        open: (Long) -> InputStream, start: Long, length: Long?
     ) {
-        open().use { input ->
-            var skip = start
-            while (skip > 0) {
-                val n = input.skip(skip)
-                if (n > 0) skip -= n
-                else if (input.read() == -1) return
-                else skip--
-            }
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            var left = length
-            while (left == null || left > 0) {
-                val want =
-                    if (left == null) buffer.size else minOf(buffer.size.toLong(), left).toInt()
-                val n = input.read(buffer, 0, want)
-                if (n <= 0) break
-                writeFully(buffer, 0, n)
-                if (left != null) left -= n
+        withContext(Dispatchers.IO) {
+            open(start).use { input ->
+                val buffer = ByteArray(STREAM_BUFFER_SIZE)
+                var left = length
+                while (left == null || left > 0) {
+                    val want =
+                        if (left == null) buffer.size else minOf(buffer.size.toLong(), left).toInt()
+                    val n = input.read(buffer, 0, want)
+                    if (n <= 0) break
+                    writeFully(buffer, 0, n)
+                    if (left != null) left -= n
+                }
             }
         }
     }
@@ -381,7 +454,7 @@ class ServerService : Service() {
         }
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle(R.string.app_name.toString())
+            .setContentTitle(getString(R.string.app_name))
             .setContentText("端口: ${SharedState.port.value}")
             .setSmallIcon(android.R.drawable.ic_menu_info_details).setOngoing(true).build()
         startForeground(1001, notification)
@@ -410,8 +483,8 @@ suspend fun saveFile(call: RoutingCall, destinationDir: String) {
             val originalFileName = part.originalFileName ?: "上传文件"
             val targetFile = File(destinationDir, originalFileName)
             part.streamProvider().use { inputStream ->
-                targetFile.outputStream().buffered().use { outputStream ->
-                    inputStream.copyTo(outputStream)
+                targetFile.outputStream().buffered(STREAM_BUFFER_SIZE).use { outputStream ->
+                    inputStream.copyTo(outputStream, bufferSize = STREAM_BUFFER_SIZE)
                 }
             }
         }
