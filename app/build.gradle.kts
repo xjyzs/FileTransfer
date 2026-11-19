@@ -2,7 +2,6 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.kotlin.serialization)
     id("kotlin-parcelize")
 }
 
@@ -113,6 +112,10 @@ android {
     buildFeatures {
         compose = true
     }
+
+    androidResources {
+        localeFilters += listOf("zh-rCN","en")
+    }
 }
 
 
@@ -146,7 +149,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui.text)
     implementation(libs.androidx.navigation3.runtime)
-    implementation(libs.androidx.ui.graphics)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -157,8 +159,12 @@ dependencies {
     implementation(libs.core) // 二维码
 
     implementation(libs.miuix.navigation)
-    implementation(libs.ktor.server.cio)
-    implementation(libs.ktor.server.partial.content)
+    implementation(libs.ktor.server.cio) {
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
+    }
+    implementation(libs.ktor.server.partial.content) {
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
+    }
     implementation(libs.androidx.navigationevent)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 }

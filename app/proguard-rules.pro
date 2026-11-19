@@ -21,13 +21,12 @@
 #-renamesourcefileattribute SourceFile
 
 # Ktor
--keep class io.ktor.server.cio.** { *; }
--keep class io.ktor.server.engine.** { *; }
--keep class io.ktor.server.routing.** { *; }
-
--keepclassmembers class kotlinx.** {
-    volatile <fields>;
-}
-
 -dontwarn org.slf4j.**
 -dontwarn io.ktor.**
+
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int i(...);
+    public static int d(...);
+}

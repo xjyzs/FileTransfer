@@ -86,8 +86,8 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
-import com.google.zxing.MultiFormatWriter
 import com.google.zxing.common.BitMatrix
+import com.google.zxing.qrcode.QRCodeWriter
 import com.xjyzs.filetransfer.R
 import com.xjyzs.filetransfer.service.ServerService
 import com.xjyzs.filetransfer.ui.util.ColumnCard
@@ -257,7 +257,7 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
             Surface(
                 shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface
             ) {
-                val bitMatrix: BitMatrix = MultiFormatWriter().encode(
+                val bitMatrix: BitMatrix = QRCodeWriter().encode(
                     qrTxt, BarcodeFormat.QR_CODE, 512, 512, mapOf(
                         EncodeHintType.MARGIN to 0
                     )
