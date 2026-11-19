@@ -13,6 +13,7 @@ import android.os.Environment
 import android.os.IBinder
 import android.provider.DocumentsContract
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.xjyzs.filetransfer.R
 import com.xjyzs.filetransfer.utils.PickedFile
 import com.xjyzs.filetransfer.utils.Request
@@ -25,11 +26,13 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
 import io.ktor.http.content.streamProvider
+import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.origin
+import io.ktor.server.plugins.partialcontent.PartialContent
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.request.uri
 import io.ktor.server.response.respondBytesWriter
@@ -44,12 +47,13 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeFully
-import kotlin.io.DEFAULT_BUFFER_SIZE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -67,9 +71,7 @@ private sealed interface Resolved {
     data class Dir(val jsonEntries: List<String>) : Resolved
 
     data class LocalFile(
-        val file: File,
-        val mimeType: String?,
-        val asAttachment: Boolean = false
+        val file: File, val mimeType: String?, val asAttachment: Boolean = false
     ) : Resolved
 
     data class StreamFile(
@@ -117,13 +119,15 @@ private fun openSeekableStream(
     } catch (_: Exception) {
     }
 
-    val input = appContext.contentResolver.openInputStream(uri)
-        ?: throw IOException("无法打开 $uri")
+    val input =
+        appContext.contentResolver.openInputStream(uri) ?: throw IOException("无法打开 $uri")
     var skip = start
     val discard = ByteArray(STREAM_BUFFER_SIZE)
     while (skip > 0) {
         val n = input.skip(skip)
-        if (n > 0) { skip -= n; continue }
+        if (n > 0) {
+            skip -= n; continue
+        }
         val want = minOf(discard.size.toLong(), skip).toInt()
         val read = input.read(discard, 0, want)
         if (read == -1) break
@@ -133,52 +137,135 @@ private fun openSeekableStream(
 }
 
 class ServerService : Service() {
-    private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? =
-        null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wifiLock: WifiManager.WifiLock? = null
 
+    @Volatile
+    private var destroyed = false
+
+    companion object {
+        const val ACTION_START = "com.xjyzs.filetransfer.action.START"
+        const val ACTION_RESTART = "com.xjyzs.filetransfer.action.RESTART"
+
+        private val serverMutex = Mutex()
+
+        @Volatile
+        private var activeServer: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? =
+            null
+
+        fun startIfNotRunning(context: Context) {
+            val intent = Intent(context.applicationContext, ServerService::class.java).apply {
+                action = ACTION_START
+            }
+            ContextCompat.startForegroundService(context.applicationContext, intent)
+        }
+
+        fun restart(context: Context) {
+            val intent = Intent(context.applicationContext, ServerService::class.java).apply {
+                action = ACTION_RESTART
+            }
+            ContextCompat.startForegroundService(context.applicationContext, intent)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        destroyed = false
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundServiceNotification()
-        startServer()
+        when (intent?.action) {
+            ACTION_START -> {
+                serviceScope.launch {
+                    serverMutex.withLock {
+                        if (destroyed) return@withLock
+                        if (activeServer != null && SharedState.serverRunning.value) {
+                            return@withLock
+                        }
+                        startServerInternal()
+                    }
+                }
+            }
+
+            ACTION_RESTART, null -> {
+                serviceScope.launch {
+                    serverMutex.withLock {
+                        if (destroyed) return@withLock
+                        stopServerInternal(updateRunningState = false)
+                        startServerInternal()
+                    }
+                }
+            }
+        }
 
         return START_STICKY
     }
 
-    private fun startServer() {
-        val loc = Environment.getExternalStorageDirectory().path
-        val appContext = applicationContext
-        val wifiManager = this.applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-        wifiLock = wifiManager.createWifiLock(
-            WifiManager.WIFI_MODE_FULL, "FireTransfer:WifiLock"
-        )
+    private fun acquireWifiLock() {
+        if (wifiLock == null) {
+            val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            wifiLock = wifiManager.createWifiLock(
+                WifiManager.WIFI_MODE_FULL, "FireTransfer:WifiLock"
+            )
+        }
         if (wifiLock?.isHeld == false) {
             wifiLock?.acquire()
         }
-        serviceScope.launch {
-            try {
-                // 测试 IP 与端口是否可用
-                val inetAddress = InetAddress.getByName(SharedState.host.value)
-                ServerSocket(SharedState.port.value.toInt(), 1, inetAddress).use {}
+    }
 
-                // 启动服务器
-                server = embeddedServer(
-                    CIO, port = SharedState.port.value.toInt(), host = SharedState.host.value
-                ) {
-                    routing {
-                        route("/{pth...}") {
-                            get { handleGet(call, loc, appContext) }
-                            post { handlePost(call, loc) }
-                            options { handleOptions(call, loc, appContext) }
-                        }
+    private fun releaseWifiLock() {
+        if (wifiLock?.isHeld == true) {
+            wifiLock?.release()
+        }
+    }
+
+    private fun stopServerInternal(updateRunningState: Boolean) {
+        val current = activeServer
+        activeServer = null
+        if (updateRunningState) {
+            SharedState._serverRunning.value = false
+        }
+        runCatching { current?.stop(500, 1000) }
+    }
+
+    private fun startServerInternal() {
+        if (destroyed) return
+        val loc = Environment.getExternalStorageDirectory().path
+        val appContext = applicationContext
+        acquireWifiLock()
+        try {
+            // 测试 IP 与端口是否可用
+            val portNum = SharedState.port.value.toInt()
+            val hostStr = SharedState.host.value
+            val inetAddress = InetAddress.getByName(hostStr)
+            ServerSocket(portNum, 1, inetAddress).use {}
+
+            // 启动服务器
+            val newServer = embeddedServer(
+                CIO, port = portNum, host = hostStr
+            ) {
+                install(PartialContent)
+                routing {
+                    route("/{pth...}") {
+                        get { handleGet(call, loc, appContext) }
+                        post { handlePost(call, loc) }
+                        options { handleOptions(call, loc, appContext) }
                     }
                 }
-                server?.start(wait = false)
-                SharedState._serverRunning.value = true
-            } catch (e: Exception) {
-                SharedState._errorMsg.value = e.message.toString()
-                SharedState._errorDialogExpanded.value = true
             }
+            newServer.start(wait = false)
+            if (destroyed) {
+                runCatching { newServer.stop(500, 1000) }
+                return
+            }
+            activeServer = newServer
+            SharedState._serverRunning.value = true
+        } catch (e: Exception) {
+            activeServer = null
+            SharedState._serverRunning.value = false
+            SharedState._errorMsg.value = e.message ?: e.toString()
+            SharedState._errorDialogExpanded.value = true
         }
     }
 
@@ -197,16 +284,15 @@ class ServerService : Service() {
         val f = File(loc, segments.joinToString("/"))
         if (f.isFile) {
             return Resolved.LocalFile(
-                file = f,
-                mimeType = URLConnection.guessContentTypeFromName(f.name)
+                file = f, mimeType = URLConnection.guessContentTypeFromName(f.name)
             )
         }
         if (f.isDirectory) {
             return Resolved.Dir(
                 f.listFiles()
-                    ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                    ?.map { entryJson(it.name, if (it.isDirectory) -1 else it.length()) }
-                    ?: emptyList())
+                ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+                ?.map { entryJson(it.name, if (it.isDirectory) -1 else it.length()) }
+                ?: emptyList())
         }
         return null
     }
@@ -229,7 +315,9 @@ class ServerService : Service() {
 
         if (!item.isDirectory) {
             if (segments.size > 1) return null
-            return Resolved.StreamFile(item.name, item.size, item.mimeType, asAttachment = true) { offset ->
+            return Resolved.StreamFile(
+                item.name, item.size, item.mimeType, asAttachment = true
+            ) { offset ->
                 openSeekableStream(appContext, item.uri, offset)
             }
         }
@@ -250,10 +338,7 @@ class ServerService : Service() {
                 if (seg != rest.last()) return null
                 val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.docId)
                 return Resolved.StreamFile(
-                    child.name,
-                    child.size,
-                    child.mimeType,
-                    asAttachment = true
+                    child.name, child.size, child.mimeType, asAttachment = true
                 ) { offset ->
                     openSeekableStream(appContext, docUri, offset)
                 }
@@ -351,13 +436,13 @@ class ServerService : Service() {
     private fun contentDispositionHeader(name: String): String {
         val quoted = name.replace("\\", "\\\\").replace("\"", "\\\"")
         val encoded = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
-        return "filename=\"$quoted\"; filename*=UTF-8''$encoded"
+        return "attachment; filename=\"$quoted\"; filename*=UTF-8''$encoded"
     }
 
     private suspend fun sendFile(call: RoutingCall, ref: Resolved) {
         when (ref) {
             is Resolved.LocalFile -> {
-                if (ref.asAttachment) {
+                if (ref.asAttachment || !SharedState.enablePreview.value) {
                     call.response.headers.append(
                         HttpHeaders.ContentDisposition, contentDispositionHeader(ref.file.name)
                     )
@@ -385,9 +470,7 @@ class ServerService : Service() {
                             HttpHeaders.ContentRange, "bytes ${range.first}-${range.last}/$size"
                         )
                         call.respondBytesWriter(
-                            contentType,
-                            HttpStatusCode.PartialContent,
-                            length
+                            contentType, HttpStatusCode.PartialContent, length
                         ) {
                             streamFrom(ref.open, range.first, length)
                         }
@@ -461,16 +544,19 @@ class ServerService : Service() {
     }
 
     override fun onDestroy() {
+        destroyed = true
+        releaseWifiLock()
+        val serverToStop = activeServer
+        activeServer = null
+        SharedState._serverRunning.value = false
+        val scopeToCancel = serviceScope
+        CoroutineScope(Dispatchers.IO).launch {
+            serverMutex.withLock {
+                runCatching { serverToStop?.stop(500, 1000) }
+            }
+            scopeToCancel.cancel()
+        }
         super.onDestroy()
-        if (wifiLock?.isHeld == true) {
-            wifiLock?.release()
-        }
-        serviceScope.launch {
-            server?.stop(1000, 2000)
-            SharedState._serverRunning.value = false
-            server = null
-        }
-        serviceScope.cancel()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

@@ -21,17 +21,16 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -55,13 +54,13 @@ import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -96,7 +95,6 @@ import com.xjyzs.filetransfer.ui.util.SmallTextField
 import com.xjyzs.filetransfer.utils.PickedFile
 import com.xjyzs.filetransfer.utils.SafUtils
 import com.xjyzs.filetransfer.utils.SharedState
-import java.net.NetworkInterface
 
 @SuppressLint("BatteryLife")
 @Composable
@@ -141,9 +139,10 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
             )
         }
     }
-    val ipLst = remember { mutableStateListOf<String>() }
+    val ipLst by SharedState.ipLst.collectAsStateWithLifecycle()
     val host by SharedState.host.collectAsStateWithLifecycle()
     val port by SharedState.port.collectAsStateWithLifecycle()
+    val enablePreview by SharedState.enablePreview.collectAsStateWithLifecycle()
     val errorDialogExpanded by SharedState.errorDialogExpanded.collectAsStateWithLifecycle()
     val errorMsg by SharedState.errorMsg.collectAsStateWithLifecycle()
     val serverRunning by SharedState.serverRunning.collectAsStateWithLifecycle()
@@ -171,6 +170,7 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                 intent.data = "package:${context.packageName}".toUri()
                 context.startActivity(intent)
                 (context as ComponentActivity).finish()
+                return@LaunchedEffect
             }
         } else {
             if (ContextCompat.checkSelfPermission(
@@ -182,6 +182,10 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                 )
             }
         }
+        val justInitialized = SharedState.ensureInitialized(context)
+        if (justInitialized) {
+            ServerService.startIfNotRunning(context)
+        }
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
@@ -190,39 +194,19 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
             context.startActivity(intent)
         }
     }
-    LaunchedEffect(Unit) {
-        val interfaces = NetworkInterface.getNetworkInterfaces()
-        for (intf in interfaces) {
-            for (addr in intf.inetAddresses) {
-                if (!addr.isLoopbackAddress) {
-                    val addrStr = addr.hostAddress ?: "unknown"
-                    if (!addrStr.contains("fe80")) {
-                        ipLst.add(addrStr)
-                        if ("192." in addrStr) {
-                            SharedState._host.value = addrStr
-                        }
-                    }
-                }
-            }
-        }
-        ipLst.add("127.0.0.1")
-        ipLst.add("::")
-        if (SharedState._host.value.isEmpty()) {
-            SharedState._host.value = "127.0.0.1"
-        }
-    }
     @Composable
     fun IpRow(
         innerIp: String, expandButton: Boolean = false, highlightCurrentHost: Boolean = false
     ) {
         Row(Modifier.padding(vertical = 4.dp)) {
-            Box(modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable {
+            Box(modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable {
                     SharedState._host.value = innerIp
                     ipExpanded = false
-                    val intent = Intent(context, ServerService::class.java)
-                    context.stopService(intent)
-                    context.startForegroundService(intent)
-                }.background(
+                    ServerService.restart(context)
+                }
+                .background(
                     if (highlightCurrentHost && innerIp == host) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
@@ -323,12 +307,17 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
         )
     }, modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)) { innerPadding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 8.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 8.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Row {
+            Row(Modifier.height(IntrinsicSize.Max)) {
                 ColumnCard(
-                    Modifier.weight(0.618f)
+                    Modifier
+                        .weight(0.618f)
+                        .fillMaxHeight()
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("服务状态", fontSize = 22.sp)
@@ -343,12 +332,11 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                         }
                     }
                     Text(if (serverRunning) "运行中" else "未运行")
+                    Spacer(Modifier.weight(1f))
                     Row {
                         Spacer(Modifier.weight(1f))
                         TextButton({
-                            val intent = Intent(context, ServerService::class.java)
-                            context.stopService(intent)
-                            context.startForegroundService(intent)
+                            ServerService.restart(context)
                         }) { Text(if (serverRunning) "重启" else "启动") }
                     }
                 }
@@ -367,7 +355,8 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                         Row {
                             Spacer(Modifier.weight(1f))
                             Box(
-                                Modifier.clip(RoundedCornerShape(6.dp))
+                                Modifier
+                                    .clip(RoundedCornerShape(6.dp))
                                     .background(MaterialTheme.colorScheme.secondaryContainer)
                             ) {
                                 SmallTextField(
@@ -378,6 +367,16 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                                     )
                                 )
                             }
+                        }
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    ColumnCard {
+                        Text("预览", fontSize = 22.sp)
+                        Row {
+                            Spacer(Modifier.weight(1f))
+                            Switch(
+                                enablePreview,
+                                { SharedState._enablePreview.value = !enablePreview })
                         }
                     }
                 }
@@ -407,11 +406,13 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                     ) { Icon(Icons.Default.FileOpen, null) }
                 }
                 Row(Modifier.padding(vertical = 4.dp)) {
-                    Box(modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable {
+                    Box(modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
                             selectedFilesExpanded = true
-                        }.background(
-                            MaterialTheme.colorScheme.secondaryContainer,
-                            RoundedCornerShape(6.dp)
+                        }
+                        .background(
+                            MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(6.dp)
                         )) {
                         Row(
                             Modifier.padding(
@@ -438,7 +439,7 @@ fun MainScreenContent(onNavigateToLog: () -> Unit) {
                         }
                     }
                 }
-                DropdownMenu(selectedFilesExpanded,{selectedFilesExpanded=false}) {
+                DropdownMenu(selectedFilesExpanded, { selectedFilesExpanded = false }) {
                     if (SharedState.selectedFiles.isEmpty()) {
                         Text(
                             "未选择文件或目录",

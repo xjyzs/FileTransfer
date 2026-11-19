@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.core.net.toUri
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavEntryDecorator
 import androidx.navigation3.runtime.NavKey
@@ -42,6 +43,8 @@ import kotlinx.coroutines.launch
 import kotlinx.parcelize.Parcelize
 
 class MainActivity : ComponentActivity() {
+    private var wasPaused = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleFileIntent(intent)
@@ -61,6 +64,22 @@ class MainActivity : ComponentActivity() {
         handleFileIntent(intent)
     }
 
+    override fun onPause() {
+        super.onPause()
+        wasPaused = true
+    }
+
+    // 刷新 IP 列表
+    override fun onResume() {
+        super.onResume()
+        if (wasPaused || SharedState.isInitialized) {
+            wasPaused = false
+            lifecycleScope.launch {
+                SharedState.refreshIpList()
+            }
+        }
+    }
+
     private fun handleFileIntent(intent: Intent?) {
         for (uri in extractFileUris(intent)) {
             if (SharedState.selectedFiles.any { it.uri == uri }) continue
@@ -71,7 +90,8 @@ class MainActivity : ComponentActivity() {
                     uri = uri,
                     name = info?.name ?: uri.lastPathSegment ?: "打开文件",
                     isDirectory = false,
-                    mimeType = info?.mimeType ?: runCatching { contentResolver.getType(uri) }.getOrNull(),
+                    mimeType = info?.mimeType
+                        ?: runCatching { contentResolver.getType(uri) }.getOrNull(),
                     size = info?.size
                 )
             )
@@ -153,7 +173,9 @@ fun AppNav() {
                 onPop = { key -> predictiveBackHandler.onPagePop(key, scope) }) { content ->
                 with(predictiveBackHandler) {
                     Box(
-                        Modifier.fillMaxSize().predictiveBackAnimationDecorator(
+                        Modifier
+                            .fillMaxSize()
+                            .predictiveBackAnimationDecorator(
                                 gestureState?.transitionState,
                                 content.contentKey,
                                 navigator.current()
