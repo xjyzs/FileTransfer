@@ -15,7 +15,7 @@ ktorServerPartialContent = "3.6.1"
 lifecycle = "2.11.0"
 uiText = "1.12.1"
 uiGraphics = "1.12.1"
-navigation3 = "1.2.1"
+navigation3 = "1.2.0-alpha07"
 navigationevent = "1.2.0"
 miuix = "0.9.3"
 
