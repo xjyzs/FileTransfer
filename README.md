@@ -1,7 +1,7 @@
 # FileTransfer
 <img src="https://img.shields.io/badge/Platform-Android-green.svg" alt="Platform"> <img src="https://img.shields.io/badge/Language-Kotlin-purple.svg" alt="Language"> <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
 
-**一款轻量、极速的 Android 本地文件局域网传输工具。接收端无需安装任何客户端，打开浏览器即可秒速接收。**
+**一款轻量、极速的 Android 本地文件局域网传输工具。接收端无需安装任何客户端，打开浏览器即可接收。**
 ## 「界面展示」
 **主界面 ＆ 访问日志界面**
 
