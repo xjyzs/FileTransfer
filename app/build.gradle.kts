@@ -45,9 +45,19 @@ android {
         } else {
             signingConfigs.getByName("debug")
         }
+        create("x86") {
+            dimension = "abi"
+            ndk { abiFilters.add("x86") }
+            this.signingConfig = signingConfig
+        }
         create("x86_64") {
             dimension = "abi"
             ndk { abiFilters.add("x86_64") }
+            this.signingConfig = signingConfig
+        }
+        create("arm") {
+            dimension = "abi"
+            ndk { abiFilters.add("armeabi-v7a") }
             this.signingConfig = signingConfig
         }
         create("arm64Minsdk35") {
@@ -70,10 +80,6 @@ android {
         }
         create("universal") {
             dimension = "abi"
-            ndk {
-                abiFilters.add("arm64-v8a")
-                abiFilters.add("x86_64")
-            }
             this.signingConfig = signingConfig
         }
     }
@@ -101,8 +107,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_25
-        targetCompatibility = JavaVersion.VERSION_25
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
     buildFeatures {
         compose = true
